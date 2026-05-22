@@ -10,6 +10,19 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
+/**
+ * 目录列表工具 —— 列出指定目录下的文件和子目录
+ *
+ * 功能：列出目录内容，可选递归遍历子目录
+ *
+ * 输出格式：
+ * - [D] 表示目录
+ * - [F] 表示文件
+ *
+ * 安全机制：
+ * - requiresApproval=false：列出目录不需要审批
+ * - readOnly=true：只读操作
+ */
 public class ListDirectoryTool implements Tool {
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
@@ -51,6 +64,11 @@ public class ListDirectoryTool implements Tool {
             path = FileToolSupport.normalizePath(rawPath);
         } catch (InvalidPathException e) {
             return ToolExecutionResult.error("Invalid path: " + rawPath);
+        }
+
+        String wsError = FileToolSupport.checkInsideWorkspace(path);
+        if (wsError != null) {
+            return ToolExecutionResult.error(wsError);
         }
 
         if (!Files.exists(path)) {

@@ -10,6 +10,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * 写文件工具 —— 向文件写入文本内容
+ *
+ * 功能：将 UTF-8 文本写入指定文件，支持覆盖或追加模式
+ *
+ * 安全机制：
+ * - requiresApproval=true：需要用户确认
+ * - destructive=true：会修改文件系统
+ * - 内容大小限制：超过 100,000 字符拒绝写入
+ * - 二进制文件保护：拒绝覆盖二进制文件
+ */
 public class WriteFileTool implements Tool {
     private static final int MAX_CONTENT_CHARS = 100_000;
 
@@ -57,6 +68,11 @@ public class WriteFileTool implements Tool {
             return ToolExecutionResult.error("Invalid path: " + rawPath);
         }
 
+        String wsError = FileToolSupport.checkInsideWorkspace(path);
+        if (wsError != null) {
+            return ToolExecutionResult.error(wsError);
+        }
+
         boolean append = FileToolSupport.booleanValue(input.get("append"), false);
 
         try {
@@ -89,11 +105,34 @@ public class WriteFileTool implements Tool {
                 );
             }
 
-            return ToolExecutionResult.success(
-                    "Wrote " + content.length() + " characters to " + path.toAbsolutePath() + " (append=" + append + ")."
-            );
+            String summary = "Wrote " + content.length() + " characters to " + path.toAbsolutePath() + " (append=" + append + ").";
+            String preview = buildPreview(content);
+            if (preview != null) {
+                summary += "\n" + preview;
+            }
+            return ToolExecutionResult.success(summary);
         } catch (IOException e) {
             return ToolExecutionResult.error("Failed to write file: " + e.getMessage());
         }
+    }
+
+    private static final int PREVIEW_MAX_LINES = 60;
+
+    private String buildPreview(String content) {
+        String[] lines = content.split("\\n", -1);
+        if (lines.length == 0) return null;
+
+        int show = Math.min(lines.length, PREVIEW_MAX_LINES);
+        StringBuilder sb = new StringBuilder();
+        sb.append("Preview (").append(show).append("/").append(lines.length).append(" lines):\n");
+        sb.append("```\n");
+        for (int i = 0; i < show; i++) {
+            sb.append(String.format("%4d│ %s%n", i + 1, lines[i]));
+        }
+        if (lines.length > PREVIEW_MAX_LINES) {
+            sb.append("    ... (").append(lines.length - PREVIEW_MAX_LINES).append(" more lines)\n");
+        }
+        sb.append("```");
+        return sb.toString();
     }
 }

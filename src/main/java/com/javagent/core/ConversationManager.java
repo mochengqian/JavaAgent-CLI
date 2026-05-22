@@ -1,5 +1,7 @@
 package com.javagent.core;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -9,6 +11,8 @@ import com.javagent.model.ToolCall;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -18,46 +22,135 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+/**
+ * 对话管理器 —— 管理对话历史和多会话
+ *
+ * 核心功能：
+ * 1. 维护当前对话的消息列表
+ * 2. 支持多会话：保存/加载/切换不同对话
+ * 3. 每次对话自动保存，下次启动自动恢复
+ *
+ * 什么是"多会话"？
+ * 就像浏览器的多个标签页一样，你可以有多个独立的对话，
+ * 每个对话有自己的历史记录。你可以：
+ * - /save 保存当前对话
+ * - /load 加载之前的对话
+ * - /sessions 查看所有保存的对话
+ * - /new 开始新对话
+ *
+ * 数据存储：
+ * - 每个会话保存为 ~/.javaagent-cli/sessions/{uuid}.json
+ * - 当前会话 ID 记录在 current-session.txt
+ */
 public class ConversationManager {
+    private static final Logger LOG = Logger.getLogger(ConversationManager.class.getName());
     private static final DateTimeFormatter TITLE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
     private final Config config;
+    // Jackson JSON 序列化器（用于保存/加载会话）
     private final ObjectMapper objectMapper;
 
-    private String currentSessionId;
-    private String currentSessionTitle;
-    private List<Message> messages = new ArrayList<>();
-    private LocalDateTime sessionStart = LocalDateTime.now();
-    private String lastResponse = "";
+    // 当前会话状态
+    private String currentSessionId;          // 当前会话 ID
+    private String currentSessionTitle;       // 当前会话标题
+    private List<Message> messages = new ArrayList<>();  // 当前对话的消息列表
+    private LocalDateTime sessionStart = LocalDateTime.now();  // 会话开始时间
+    private String lastResponse = "";         // AI 最后一次回复
 
     public ConversationManager(Config config) {
         this.config = config;
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .enable(SerializationFeature.INDENT_OUTPUT);
         startNewSession(null);
     }
 
+    /** 添加用户消息 */
     public void addUserMessage(String content) {
         messages.add(Message.user(content));
+        // 首条用户消息自动设置会话标题
+        if (messages.stream().filter(m -> m.role() == Role.USER).count() == 1) {
+            autoSetTitle(content);
+        }
     }
 
+    private void autoSetTitle(String content) {
+        if (content == null || content.isBlank()) return;
+        // 只在标题仍为默认格式时自动设置
+        if (currentSessionTitle != null && currentSessionTitle.startsWith("Session ")) {
+            String title = content.replaceAll("[\\r\\n]+", " ").trim();
+            if (title.length() > 40) {
+                title = title.substring(0, 37) + "...";
+            }
+            currentSessionTitle = title;
+        }
+    }
+
+    /** 添加 AI 纯文本回复 */
     public void addAssistantMessage(String content) {
         messages.add(Message.assistant(content));
         lastResponse = content == null ? "" : content;
     }
 
+    public void addAssistantMessage(String content, String reasoningContent) {
+        messages.add(Message.assistant(content, reasoningContent));
+        lastResponse = content == null ? "" : content;
+    }
+
+    /** 添加 AI 工具调用消息 */
     public void addAssistantToolCallMessage(String content, List<ToolCall> toolCalls) {
         messages.add(Message.assistantWithToolCalls(content, toolCalls));
     }
 
+    public void addAssistantToolCallMessage(String content, List<ToolCall> toolCalls, String reasoningContent) {
+        messages.add(Message.assistantWithToolCalls(content, toolCalls, reasoningContent));
+    }
+
+    /** 添加工具结果消息 */
     public void addToolResultMessage(String toolCallId, String toolName, String content, boolean error) {
         messages.add(Message.toolResult(toolCallId, toolName, content, error));
     }
 
+    /** 获取当前对话的完整消息列表（不可变副本） */
     public List<Message> currentContext() {
         return List.copyOf(messages);
+    }
+
+    /**
+     * 上下文压缩 —— 当消息数量超过限制时，裁剪中间消息
+     *
+     * 策略：保留第一条用户消息（原始意图）+ 最近 N 条消息，
+     * 中间插入一条摘要标记消息。保证 tool call/result 配对不被拆散。
+     */
+    public void compactIfNeeded(int maxMessages) {
+        if (messages.size() <= maxMessages) {
+            return;
+        }
+
+        // 保留最近的 maxMessages - 1 条消息（留 1 个位置给摘要标记）
+        int keepFromEnd = maxMessages - 1;
+        int trimIndex = messages.size() - keepFromEnd;
+
+        // 向前调整，避免拆散 tool result 和它前面的 assistant tool-call
+        while (trimIndex > 1 && messages.get(trimIndex).role() == Role.TOOL) {
+            trimIndex--;
+        }
+
+        if (trimIndex <= 1) {
+            return; // 不需要压缩
+        }
+
+        int omitted = trimIndex - 1; // 减去保留的第 0 条
+        Message marker = Message.user("[System: " + omitted + " earlier messages omitted to fit context window.]");
+
+        List<Message> compacted = new ArrayList<>();
+        compacted.add(messages.getFirst()); // 保留第一条用户消息
+        compacted.add(marker);
+        compacted.addAll(messages.subList(trimIndex, messages.size()));
+
+        this.messages = compacted;
     }
 
     public int messageCount() {
@@ -76,10 +169,12 @@ public class ConversationManager {
         return currentSessionTitle;
     }
 
+    /** 清空当前会话 */
     public void clearCurrentSession() {
         startNewSession(null);
     }
 
+    /** 开始新会话 */
     public void startNewSession(String title) {
         LocalDateTime now = LocalDateTime.now();
         this.currentSessionId = UUID.randomUUID().toString();
@@ -89,10 +184,12 @@ public class ConversationManager {
         this.lastResponse = "";
     }
 
+    /** 保存当前会话（无标题覆盖） */
     public void saveCurrentSession() throws IOException {
         saveCurrentSession(null);
     }
 
+    /** 保存当前会话（可覆盖标题） */
     public void saveCurrentSession(String titleOverride) throws IOException {
         if (titleOverride != null && !titleOverride.isBlank()) {
             currentSessionTitle = titleOverride.trim();
@@ -120,6 +217,7 @@ public class ConversationManager {
         Files.writeString(config.currentSessionMarkerPath(), currentSessionId);
     }
 
+    /** 加载上次会话 */
     public boolean loadLastSession() throws IOException {
         Path markerPath = config.currentSessionMarkerPath();
         if (Files.exists(markerPath)) {
@@ -140,6 +238,7 @@ public class ConversationManager {
         return true;
     }
 
+    /** 按 ID 或标题加载会话 */
     public boolean loadSession(String query) throws IOException {
         List<SessionSummary> sessions = listSessions();
         if (sessions.isEmpty()) {
@@ -170,6 +269,7 @@ public class ConversationManager {
         return true;
     }
 
+    /** 列出所有保存的会话 */
     public List<SessionSummary> listSessions() throws IOException {
         if (!Files.exists(config.sessionDirectory())) {
             return List.of();
@@ -183,6 +283,55 @@ public class ConversationManager {
                     .sorted(Comparator.comparing(SessionSummary::lastUpdated).reversed())
                     .toList();
         }
+    }
+
+    /**
+     * 导出当前对话为 Markdown 格式
+     */
+    public String exportAsMarkdown() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("# ").append(currentSessionTitle).append("\n\n");
+        sb.append("**Session ID:** `").append(shortId(currentSessionId)).append("`  \n");
+        sb.append("**Started:** ").append(sessionStart.format(TITLE_FORMAT)).append("  \n");
+        sb.append("**Messages:** ").append(messages.size()).append("\n\n");
+        sb.append("---\n\n");
+
+        for (Message msg : messages) {
+            switch (msg.role()) {
+                case USER -> {
+                    sb.append("## User\n\n");
+                    sb.append(msg.content() != null ? msg.content() : "").append("\n\n");
+                }
+                case ASSISTANT -> {
+                    sb.append("## Assistant\n\n");
+                    if (msg.reasoningContent() != null && !msg.reasoningContent().isBlank()) {
+                        sb.append("<details><summary>Thinking</summary>\n\n");
+                        sb.append(msg.reasoningContent()).append("\n\n");
+                        sb.append("</details>\n\n");
+                    }
+                    if (msg.content() != null && !msg.content().isBlank()) {
+                        sb.append(msg.content()).append("\n\n");
+                    }
+                    if (msg.toolCalls() != null) {
+                        for (var tc : msg.toolCalls()) {
+                            sb.append("### Tool Call: `").append(tc.name()).append("`\n\n");
+                            sb.append("```json\n").append(tc.input()).append("\n```\n\n");
+                        }
+                    }
+                }
+                case TOOL -> {
+                    String name = (msg.toolResult() != null && msg.toolResult().toolName() != null)
+                            ? msg.toolResult().toolName() : "tool";
+                    sb.append("## Tool Result: `").append(name).append("`\n\n");
+                    sb.append("```\n").append(msg.content() != null ? msg.content() : "").append("\n```\n\n");
+                }
+                case SYSTEM -> {
+                    sb.append("## System\n\n");
+                    sb.append(msg.content() != null ? msg.content() : "").append("\n\n");
+                }
+            }
+        }
+        return sb.toString();
     }
 
     public String sessionStats() {
@@ -220,11 +369,13 @@ public class ConversationManager {
             LocalDateTime updated = snapshot.lastUpdated() == null ? LocalDateTime.MIN : snapshot.lastUpdated();
             int messageCount = snapshot.messages() == null ? 0 : snapshot.messages().size();
             return new SessionSummary(id, title, updated, messageCount);
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            LOG.log(Level.FINE, "Failed to read session summary: " + file, e);
             return null;
         }
     }
 
+    /** 从快照恢复会话状态 */
     private void applySnapshot(SessionSnapshot snapshot) {
         this.currentSessionId = snapshot.sessionId() == null || snapshot.sessionId().isBlank()
                 ? UUID.randomUUID().toString()
@@ -252,6 +403,7 @@ public class ConversationManager {
         return sessionId.length() <= 8 ? sessionId : sessionId.substring(0, 8);
     }
 
+    /** 会话摘要（用于列表展示） */
     public record SessionSummary(
             String id,
             String title,
@@ -260,6 +412,8 @@ public class ConversationManager {
     ) {
     }
 
+    /** 会话快照（完整会话数据，用于保存/加载） */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record SessionSnapshot(
             String sessionId,
             String title,

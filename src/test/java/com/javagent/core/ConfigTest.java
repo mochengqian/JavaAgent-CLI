@@ -22,7 +22,7 @@ class ConfigTest {
         assertTrue(config.isMockMode());
         assertTrue(config.autoSave());
         assertEquals("gpt-5.4-mini", config.model());
-        assertEquals(6, config.maxIterations());
+        assertEquals(12, config.maxIterations());
         assertFalse(config.bashEnabled());
         assertTrue(config.streamResponses());
         assertTrue(config.approvalCacheEnabled());

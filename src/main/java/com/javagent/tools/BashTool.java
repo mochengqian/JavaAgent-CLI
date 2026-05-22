@@ -8,7 +8,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
+/**
+ * Bash 工具 —— 执行 shell 命令
+ *
+ * 功能：在系统 shell 中执行命令，返回输出结果
+ *
+ * 安全机制：
+ * - 默认禁用：需要用户手动 /bash on 开启
+ * - requiresApproval=true：每次执行都需要用户确认
+ * - destructive=true：标记为破坏性操作
+ * - 危险命令检测：自动拒绝 rm -rf / 等命令
+ * - 超时控制：默认 10 秒，超时自动终止
+ * - 输出截断：超过 50,000 字符自动截断
+ */
 public class BashTool implements Tool {
     private static final int DEFAULT_TIMEOUT_SECONDS = 10;
     private static final int MAX_OUTPUT_CHARS = 50_000;
@@ -47,7 +61,7 @@ public class BashTool implements Tool {
         }
 
         int timeoutSeconds = intValue(input.get("timeoutSeconds"), DEFAULT_TIMEOUT_SECONDS);
-        ProcessBuilder processBuilder = new ProcessBuilder("/bin/bash", "-lc", command);
+        ProcessBuilder processBuilder = buildProcess(command);
         processBuilder.redirectErrorStream(true);
 
         try {
@@ -83,13 +97,72 @@ public class BashTool implements Tool {
         }
     }
 
+    private static ProcessBuilder buildProcess(String command) {
+        boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
+        if (isWindows) {
+            return new ProcessBuilder("cmd.exe", "/c", command);
+        }
+        return new ProcessBuilder("/bin/bash", "-lc", command);
+    }
+
     private boolean looksDangerous(String command) {
-        String normalized = command.toLowerCase();
-        return normalized.contains("rm -rf /")
-                || normalized.contains("rm -rf ~")
-                || normalized.contains("mkfs")
-                || normalized.contains("dd if=/dev/zero")
-                || normalized.contains(":(){:|:&};:");
+        // Normalize: lowercase, collapse whitespace, strip quotes to defeat trivial obfuscation
+        String normalized = command.toLowerCase()
+                .replaceAll("[\"']", "")
+                .replaceAll("\\s+", " ")
+                .trim();
+
+        // 1. Filesystem destruction: rm -rf targeting root, home, or wildcard
+        if (Pattern.matches(".*rm\\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\\s*(/|~|\\.\\.?|\\*)\\s*.*", normalized)) {
+            return true;
+        }
+        // rm -r / (without -f, still destructive)
+        if (Pattern.matches(".*rm\\s+-[a-zA-Z]*r[a-zA-Z]*\\s+(/|~)\\s*.*", normalized)) {
+            return true;
+        }
+        // shred / wipefile
+        if (Pattern.matches(".*shred\\s+.*", normalized) || normalized.contains("wipefs")) {
+            return true;
+        }
+
+        // 2. Disk/device operations
+        if (Pattern.matches(".*mkfs\\s.*", normalized)) return true;
+        if (Pattern.matches(".*dd\\s+if=.*of=/dev/.*", normalized)) return true;
+        if (Pattern.matches(".*(fdisk|parted|sfdisk)\\s+(/dev/|[a-z])", normalized)) return true;
+
+        // 3. Fork bombs
+        if (Pattern.matches(".*:\\(\\)\\s*\\{.*", normalized)) return true;  // :(){ ... };:
+        if (normalized.contains("|&") && normalized.contains(":")) return true;
+
+        // 4. Pipe-to-shell: curl/wget piping directly to sh/bash
+        if (Pattern.matches(".*(curl|wget)\\s.*\\|\\s*(sh|bash|zsh|python|perl).*", normalized)) return true;
+
+        // 5. System halt/reboot/poweroff
+        if (Pattern.matches(".*(shutdown|halt|reboot|poweroff|init\\s+[06])\\s.*", normalized)) return true;
+
+        // 6. Kill PID 1 or kill all processes
+        if (Pattern.matches(".*kill\\s+(-9\\s+)?1(\\s|$).*", normalized)) return true;
+        if (Pattern.matches(".*kill\\s+-9\\s+-1(\\s|$).*", normalized)) return true;
+        if (Pattern.matches(".*pkill\\s+(-9\\s+)?-1(\\s|$).*", normalized)) return true;
+
+        // 7. Recursive chmod 777 / chown on root
+        if (Pattern.matches(".*chmod\\s+(-R\\s+)?777\\s+/(\\s|$).*", normalized)) return true;
+        if (Pattern.matches(".*chown\\s+.*\\s+/(\\s|$).*", normalized)) return true;
+
+        // 8. /etc/passwd or /etc/shadow modification
+        if (Pattern.matches(".*(>|>>)\\s*/etc/(passwd|shadow|sudoers).*", normalized)) return true;
+        if (Pattern.matches(".*chmod\\s+.*\\s+/etc/(passwd|shadow).*", normalized)) return true;
+
+        // 9. Network exfiltration via curl/wget POST
+        if (Pattern.matches(".*curl\\s+.*-d\\s.*@.*", normalized)) return true;
+        if (Pattern.matches(".*wget\\s+.*--post-file.*", normalized)) return true;
+
+        // 10. Reverse shell patterns
+        if (Pattern.matches(".*nc\\s+.*-e\\s+/(bin/)?(ba)?sh.*", normalized)) return true;
+        if (Pattern.matches(".*bash\\s+-i\\s+>&\\s+/dev/tcp/.*", normalized)) return true;
+        if (Pattern.matches(".*python.*socket.*connect.*", normalized)) return true;
+
+        return false;
     }
 
     private int intValue(Object value, int defaultValue) {

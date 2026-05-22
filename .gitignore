@@ -1,8 +1,30 @@
+# Build output
 target/
+dependency-reduced-pom.xml
+*.class
+*.jar
+*.log
+
+# IDE
+.idea/
+.codebuddy/
+*.iml
+.vscode/
+*.swp
+
+# macOS
+.DS_Store
+
+# Runtime data
 config.properties
 last_session.json
 .javaagent-cli/
+current-session.txt
+history.txt
+
+# Demo / temp files
 notes.txt
 demo-output.txt
 cache-demo.txt
-.DS_Store
+build_log.txt
+session-*.md

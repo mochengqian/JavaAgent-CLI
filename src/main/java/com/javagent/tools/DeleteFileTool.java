@@ -8,6 +8,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * 删除文件工具 —— 删除指定路径的普通文件
+ *
+ * 功能：删除一个文件（不支持删除目录）
+ *
+ * 安全机制：
+ * - requiresApproval=true：需要用户确认才能执行
+ * - destructive=true：标记为破坏性操作
+ * - 只能删除普通文件，不能删除目录
+ */
 public class DeleteFileTool implements Tool {
     private static final ToolDefinition DEFINITION = new ToolDefinition(
             "delete_file",
@@ -38,6 +48,11 @@ public class DeleteFileTool implements Tool {
             path = FileToolSupport.normalizePath(rawPath);
         } catch (InvalidPathException e) {
             return ToolExecutionResult.error("Invalid path: " + rawPath);
+        }
+
+        String wsError = FileToolSupport.checkInsideWorkspace(path);
+        if (wsError != null) {
+            return ToolExecutionResult.error(wsError);
         }
 
         if (!Files.exists(path)) {

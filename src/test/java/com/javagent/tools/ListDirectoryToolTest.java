@@ -1,5 +1,6 @@
 package com.javagent.tools;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -16,6 +17,11 @@ class ListDirectoryToolTest {
     Path tempDir;
 
     private final ListDirectoryTool tool = new ListDirectoryTool();
+
+    @BeforeEach
+    void setUp() {
+        FileToolSupport.setWorkspaceRoot(tempDir);
+    }
 
     @Test
     void listsDirectoryEntries() throws IOException {

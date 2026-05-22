@@ -1,5 +1,6 @@
 package com.javagent.tools;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -16,6 +17,11 @@ class ReadFileToolTest {
     Path tempDir;
 
     private final ReadFileTool tool = new ReadFileTool();
+
+    @BeforeEach
+    void setUp() {
+        FileToolSupport.setWorkspaceRoot(tempDir);
+    }
 
     @Test
     void readsRegularTextFile() throws IOException {

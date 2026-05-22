@@ -13,6 +13,18 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import java.util.stream.Stream;
 
+/**
+ * 文本搜索工具 —— 在文件中搜索匹配的文本
+ *
+ * 功能：在指定目录下递归搜索文件内容，支持正则表达式
+ *
+ * 安全机制：
+ * - requiresApproval=false：搜索不需要审批
+ * - readOnly=true：只读操作
+ * - 文件大小限制：跳过超过 256KB 的文件
+ * - 二进制文件检测：自动跳过二进制文件
+ * - 结果数量限制：最多返回 100 个匹配
+ */
 public class GrepTool implements Tool {
     private static final long MAX_SIZE_BYTES = 256 * 1024L;
     private static final int MAX_FILES = 200;
@@ -60,6 +72,11 @@ public class GrepTool implements Tool {
             path = FileToolSupport.normalizePath(rawPath);
         } catch (InvalidPathException e) {
             return ToolExecutionResult.error("Invalid path: " + rawPath);
+        }
+
+        String wsError = FileToolSupport.checkInsideWorkspace(path);
+        if (wsError != null) {
+            return ToolExecutionResult.error(wsError);
         }
 
         if (!Files.exists(path)) {

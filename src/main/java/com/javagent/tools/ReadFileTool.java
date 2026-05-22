@@ -10,6 +10,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * 读文件工具 —— 读取文本文件的内容
+ *
+ * 功能：读取指定路径的文本文件，支持 offset（起始行）和 limit（行数限制）
+ *
+ * 安全机制：
+ * - requiresApproval=false：读文件不需要审批
+ * - readOnly=true：只读操作，不会修改文件
+ * - 文件大小限制：超过 256KB 拒绝读取
+ * - 二进制文件检测：自动跳过二进制文件
+ */
 public class ReadFileTool implements Tool {
     private static final int DEFAULT_LIMIT = 200;
     private static final int MAX_LIMIT = 1000;
@@ -52,6 +63,11 @@ public class ReadFileTool implements Tool {
             path = FileToolSupport.normalizePath(rawPath);
         } catch (InvalidPathException e) {
             return ToolExecutionResult.error("Invalid path: " + rawPath);
+        }
+
+        String wsError = FileToolSupport.checkInsideWorkspace(path);
+        if (wsError != null) {
+            return ToolExecutionResult.error(wsError);
         }
 
         if (!Files.exists(path)) {

@@ -10,8 +10,22 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * 模拟模型客户端 —— 不需要 API Key 的本地测试用客户端
+ *
+ * 为什么需要 Mock？
+ * 开发和测试时，不一定有 API Key 或网络连接。
+ * MockModelClient 通过简单的关键词匹配来模拟 AI 的行为，
+ * 让你可以离线测试整个 Agent 循环（输入 → AI 回复 → 工具调用 → 结果 → AI 总结）。
+ *
+ * 工作原理：
+ * 1. 检查用户输入中的关键词（如"读取"→ read_file）
+ * 2. 返回对应的 ToolCall，让 Agent 去执行工具
+ * 3. 工具执行后，AI 总结结果
+ * 4. 如果没有匹配到关键词，返回普通文本回复
+ */
 public class MockModelClient implements ModelClient {
-    private static final Pattern FILE_PATTERN = Pattern.compile("(README(?:\\.md)?|pom\\.xml|[A-Za-z0-9_./\\\\-]+\\.(?:java|xml|md|txt|json|ya?ml|properties))");
+    private static final Pattern FILE_PATTERN = Pattern.compile("([A-Za-z]:[\\\\/][^\\s]*?(?:README(?:\\.md)?|pom\\.xml|[A-Za-z0-9_./\\\\-]+\\.(?:java|xml|md|txt|json|ya?ml|properties))|README(?:\\.md)?|pom\\.xml|[A-Za-z0-9_./\\\\-]+\\.(?:java|xml|md|txt|json|ya?ml|properties))");
     private static final Pattern QUOTED_TEXT_PATTERN = Pattern.compile("[\"']([^\"']+)[\"']");
 
     @Override
@@ -35,6 +49,20 @@ public class MockModelClient implements ModelClient {
 
         String input = maybeLastUser.get().content().trim();
         String lower = input.toLowerCase(Locale.ROOT);
+
+        if (hasTool(tools, "edit") && containsAny(lower, "edit", "replace", "修改", "替换", "str_replace")) {
+            String path = extractPathToken(input).orElse("test.txt");
+            String oldStr = extractQuotedText(input).orElse("old_text");
+            String newStr = extractQuotedText(input).orElse("new_text");
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("path", path);
+            args.put("old_string", oldStr);
+            args.put("new_string", newStr);
+            return ModelResponse.toolCalls(
+                    "I should edit the file using the edit tool.",
+                    List.of(ToolCall.of("edit", args))
+            );
+        }
 
         if (hasTool(tools, "delete_file") && containsAny(lower, "删除", "delete", "remove")) {
             String path = extractPathToken(input).orElse("notes.txt");
@@ -113,6 +141,7 @@ public class MockModelClient implements ModelClient {
         return "mock-model";
     }
 
+    /** 总结工具执行结果 —— 根据工具名称生成不同的总结模板 */
     private ModelResponse summarizeToolResult(ToolResultMessage toolResult) {
         if (toolResult.error()) {
             return ModelResponse.text("The tool call failed: " + toolResult.content());
@@ -126,16 +155,19 @@ public class MockModelClient implements ModelClient {
             case "list_directory" -> ModelResponse.text("I listed the requested directory. Here are the most relevant entries:\n\n"
                     + firstLines(toolResult.content(), 16));
             case "write_file" -> ModelResponse.text("The file write completed successfully.\n\n" + firstLines(toolResult.content(), 8));
+            case "edit" -> ModelResponse.text("The file was edited successfully.\n\n" + firstLines(toolResult.content(), 8));
             case "delete_file" -> ModelResponse.text("The requested file was deleted successfully.\n\n" + firstLines(toolResult.content(), 8));
             case "bash" -> ModelResponse.text("The command finished. Summary:\n\n" + firstLines(toolResult.content(), 12));
             default -> ModelResponse.text("Tool execution completed:\n\n" + firstLines(toolResult.content(), 12));
         };
     }
 
+    /** 检查工具列表中是否有指定名称的工具 */
     private boolean hasTool(List<ToolDefinition> tools, String name) {
         return tools.stream().anyMatch(tool -> tool.name().equals(name));
     }
 
+    /** 检查输入字符串是否包含任一关键词 */
     private boolean containsAny(String input, String... values) {
         for (String value : values) {
             if (input.contains(value)) {

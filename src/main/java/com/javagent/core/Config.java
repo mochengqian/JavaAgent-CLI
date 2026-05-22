@@ -9,9 +9,35 @@ import java.nio.file.Paths;
 import java.util.Properties;
 
 public class Config {
+    /**
+     * 配置文件名
+     */
     private static final String CONFIG_FILE = "config.properties";
+    /**
+     * 会话文件名
+     */
     private static final String SESSION_FILE = "last_session.json";
 
+    /**
+     * 配置项键名常量
+     *
+     * 这些常量定义了配置文件中使用的键名，对应以下配置项：
+     *
+     * agent.mock_mode - 是否使用模拟模式（不实际调用API） - 默认值: true
+     * agent.api_key - API 密钥 - 默认值: 空
+     * agent.base_url - API 基础 URL - 默认值: https://api.openai.com/v1
+     * agent.model - 使用的模型名称 - 默认值: gpt-5.4-mini
+     * agent.auto_save - 是否自动保存会话 - 默认值: true
+     * agent.max_iterations - 最大工具调用循环次数 - 默认值: 12
+     * agent.enable_bash - 是否启用 Bash 工具 - 默认值: false
+     * agent.stream_responses - 是否流式输出响应 - 默认值: true
+     * agent.system_prompt - 自定义系统提示词 - 默认值: 空
+     * agent.approval_cache - 是否启用审批缓存 - 默认值: true
+     * agent.allow_external_paths - 是否允许访问工作区外路径 - 默认值: false
+     * agent.bypass_permissions - 是否跳过所有工具审批确认 - 默认值: false
+     * agent.max_context_messages - 最大上下文消息数量 - 默认值: 100
+     * agent.rate_limit_qps - API 请求速率限制（每秒请求数） - 默认值: 10
+     */
     private static final String KEY_MOCK_MODE = "agent.mock_mode";
     private static final String KEY_API_KEY = "agent.api_key";
     private static final String KEY_BASE_URL = "agent.base_url";
@@ -23,10 +49,25 @@ public class Config {
     private static final String KEY_SYSTEM_PROMPT = "agent.system_prompt";
     private static final String KEY_APPROVAL_CACHE = "agent.approval_cache";
     private static final String KEY_ALLOW_EXTERNAL_PATHS = "agent.allow_external_paths";
+    private static final String KEY_BYPASS_PERMISSIONS = "agent.bypass_permissions";
+    private static final String KEY_MAX_CONTEXT_MESSAGES = "agent.max_context_messages";
+    private static final String KEY_RATE_LIMIT_QPS = "agent.rate_limit_qps";
 
+    /**
+     * 存储所有配置项的 Properties 对象
+     */
     private final Properties properties = new Properties();
+    /**
+     * 当前工作目录
+     */
     private final Path workingDirectory;
+    /**
+     * 应用主目录（通常为 ~/.javaagent-cli）
+     */
     private final Path appHome;
+    /**
+     * 配置文件路径
+     */
     private final Path configPath;
 
     private Config(Path workingDirectory, Path appHome, Path configPath) {
@@ -73,12 +114,15 @@ public class Config {
         properties.putIfAbsent(KEY_BASE_URL, "https://api.openai.com/v1");
         properties.putIfAbsent(KEY_MODEL, "gpt-5.4-mini");
         properties.putIfAbsent(KEY_AUTO_SAVE, "true");
-        properties.putIfAbsent(KEY_MAX_ITERATIONS, "6");
+        properties.putIfAbsent(KEY_MAX_ITERATIONS, "12");
         properties.putIfAbsent(KEY_ENABLE_BASH, "false");
         properties.putIfAbsent(KEY_STREAM_RESPONSES, "true");
         properties.putIfAbsent(KEY_SYSTEM_PROMPT, "");
         properties.putIfAbsent(KEY_APPROVAL_CACHE, "true");
         properties.putIfAbsent(KEY_ALLOW_EXTERNAL_PATHS, "false");
+        properties.putIfAbsent(KEY_BYPASS_PERMISSIONS, "false");
+        properties.putIfAbsent(KEY_MAX_CONTEXT_MESSAGES, "100");
+        properties.putIfAbsent(KEY_RATE_LIMIT_QPS, "10");
     }
 
     public void save() throws IOException {
@@ -203,5 +247,35 @@ public class Config {
 
     public Path workingDirectory() {
         return workingDirectory;
+    }
+
+    public boolean bypassPermissions() {
+        return Boolean.parseBoolean(properties.getProperty(KEY_BYPASS_PERMISSIONS));
+    }
+
+    public void setBypassPermissions(boolean enabled) throws IOException {
+        properties.setProperty(KEY_BYPASS_PERMISSIONS, Boolean.toString(enabled));
+        save();
+    }
+
+    public int maxContextMessages() {
+        return Integer.parseInt(properties.getProperty(KEY_MAX_CONTEXT_MESSAGES, "100"));
+    }
+
+    public int rateLimitQps() {
+        return Integer.parseInt(properties.getProperty(KEY_RATE_LIMIT_QPS, "10"));
+    }
+
+    public void reload() throws IOException {
+        read();
+        ensureDefaults();
+    }
+
+    public java.util.List<String> validate() {
+        java.util.List<String> warnings = new java.util.ArrayList<>();
+        if (maxIterations() < 1 || maxIterations() > 50) {
+            warnings.add("agent.max_iterations=" + maxIterations() + " (建议 1-50)");
+        }
+        return warnings;
     }
 }
